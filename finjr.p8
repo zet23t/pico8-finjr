@@ -113,11 +113,11 @@ function slice4spr(sx, sy, range, x, y)
 end
 
 local function idx128(x,y) return flr(x/8)*8 + flr(y/8)*8 * 128 end
-
+local function idx_map_screen(x,y) return (x + 64) | (y + 64) << 8 end
 local function rndsym(x) return rnd(x) - x*.5 end
 
 local function path(stepsize, x1, y1, x2, y2, scatter, placecallback)
-	local function halfit(x1,y1,x2,y2, n)
+	local function halfit(x1,y1,x2,y2, n, dstart,dend)
 		local dx,dy = x2 - x1, y2 - y1
 		local d = (dx * dx + dy * dy) ^ .5
 		n += 1
@@ -126,11 +126,12 @@ local function path(stepsize, x1, y1, x2, y2, scatter, placecallback)
 	
 		local r = rndsym(scatter*d)
 		local x,y = (x1 + x2) / 2 - r * ny, (y1 + y2) / 2 + r * nx
-		placecallback(x,y, d)
-		halfit(x1,y1,x,y, n)
-		halfit(x,y,x2,y2, n)
+		local dh = (dstart + dend) / 2
+		placecallback(x,y, d, dh)
+		halfit(x1,y1,x,y, n, dstart, dh)
+		halfit(x,y,x2,y2, n, dh, dend)
 	end
-	halfit(x1,y1,x2,y2, 0)
+	halfit(x1,y1,x2,y2, 0, 0,1)
 end
 
 function write_map(x,y,col)
@@ -178,7 +179,8 @@ end
 
 function _init()
 	cls()
-	print("starting game")
+	print "starting game"
+
 	cartdata("zet23t_finjr_1")
 	local first_start = dget(0) == 0
 	if first_start then
@@ -187,15 +189,15 @@ function _init()
 		player_x, player_y = dget(1), dget(2)
 	end
 
-	print("init: draw map")
+	print "generating landscape"
 	local heights = {}
+	local river_spawns = {}
 	local possible_town_points = {}
-	local function idx(x,y) return (x + 64) | (y + 64) << 8 end
 	for x=-31,32 do
 		for y=-31,32 do
 			dither = (x + y) & 1
 			local h = map_get_height(x * 128 + 64, y * 128 + 64)
-			heights[idx(x,y)] = h
+			heights[idx_map_screen(x,y)] = h
 			local col = (ishigherthanwaterlevel(h + (dither * .2 + .1)) and 12) or 1
 			if (ishigherthanwaterlevel(h)) col = (h < .25/hscale and 10 or 11)
 			if (h > .228) col = h + dither * .15 > .3 and 5 or 6
@@ -205,15 +207,71 @@ function _init()
 				possible_town_points[#possible_town_points + 1] = {x,y}
 			--	col = 7
 			end
+			if h > 0.05 then river_spawns[#river_spawns + 1] = {x, y} end
 
 			write_map(x + 31, y + 31, col)
 		end
 	end
 
-	srand(3)
+	print "river flow calculations"
+	map_rivers = {}
+	srand(1)
+	for i=1,#river_spawns / 20 do
+		local x,y = unpack(rnd(river_spawns))
+		local river_points = {}
+		while true do
+			local idx = idx_map_screen(x,y)
+			local h = heights[idx]
+			river_points[#river_points + 1] = {x * 128 + rndsym(48) + 64,y * 128 + rndsym(48) + 64}
+			local nodeinfo = {points = river_points, index = #river_points}
+			if map_rivers[idx] then
+				local other = map_rivers[idx]
+				river_points[#river_points] = other[1].points[other[1].index]
+				other[#other + 1] = nodeinfo
+				break
+			end
+			if (h < -0.05) break
+			map_rivers[idx] = {nodeinfo}
+
+			local h1,h2,h3,h4 = heights[idx_map_screen(x-1,y)] or 10, heights[idx_map_screen(x+1,y)] or 10,
+				heights[idx_map_screen(x,y-1)] or 10, heights[idx_map_screen] or 10
+
+			if h1 < h2 and h1 < h3 and h1 < h4 then
+				x = x - 1
+			elseif h2 < h3 and h2 < h4 then
+				x = x + 1
+			elseif h3 < h4 then
+				y = y - 1
+			else
+				y = y + 1
+			end 
+			write_map(x + 31, y + 31, 12)
+		end
+	end
+
+	print "generating towns"
+	map_towns = {}
 	for i=1,25 do
+		srand(i)
 		local x,y = unpack(possible_town_points[1 + flr(rnd(#possible_town_points))])
-		write_map(x + 31, y + 31, 8)
+		local town = {
+			screens = {{x,y}, {x-1,y},{x+1,y}},
+			buildings = {},
+			streets = {},
+		}
+		local cx,cy = 64 + rndsym(20) + x * 128, 64 + rndsym(20) + y*128
+		town.streets[#town.streets + 1] = {x1=cx - 80, y1=cy - 20, x2=cx + 80, y2=cy + 20}
+		-- local h = map_get_height(cx, cy)
+		-- for i=1,50 do
+
+		-- end
+		
+		if #town.streets > 0 then
+			write_map(x + 31, y + 31, 8)
+			for p in all(town.screens) do
+				map_towns[idx_map_screen(unpack(p))] = town
+			end
+		end
 	end
 end
 
@@ -286,19 +344,57 @@ local function prepare_map(sectionx, sectiony)
 	local function block(x,y) blocked[blockindex(x,y)] = true end
 	local function isblocked(x,y) return blocked[blockindex(x,y)] end
 	
-	local function road(x1,y1,x2,y2)
-		layer(3)
-		l_pal(4,5)
-		l_pal(5,10)
-		path(6,x1,y1,x2,y2,.5, function(x,y,d)
+	local function connection(d, hcut, hoffset, x1,y1,x2,y2, ondraw)
+		srand(x1-x2+y1-y2)
+		path(d,x1,y1,x2,y2,.5, function(x,y,d,p)
 			local idx = idx128(x,y)
 			local h = cached_map.height[idx]
-			if not h or h < 0 then return end
+			if not h or h < hcut or not ishigherthanwaterlevel(h + hoffset) then return end
 			
 			-- if d > 8 then
 			-- 	l_spr(83 + rnd(3), x, y - 6, .5, .5)
 			-- 	layer(5)
 			-- end
+			ondraw(x,y,d, p)
+			block(x,y)
+		end)
+	end
+
+	local function river(x1,y1,x2,y2)
+		layer(3)
+		l_pal(4,5)
+		l_pal(5,10)
+		layer(4)
+		l_pal(4,1)
+		connection(4, -.1, 0.008, x1,y1,x2,y2, function(x,y, d, p)
+			local n = 90 + rnd(2)
+			--l_call(function()rectfill(x-4,y-4,x+4,y+4,12)end)
+			layer(3)
+			if rnd()> .17 then
+				local rspr = 70 + (rnd() > .5 and 0 or 16)
+				l_spr(rspr, x + rndsym(10), y + rndsym(10),1,1, fx, fy)
+			end
+			l_spr(n, x-3, y-4)
+			layer(4)
+			l_spr(n, x-3, y-3)
+			layer(5)
+			l_call(function() 
+				local s = sin(p*12 - time() * 2)
+				for i=1,3 + s do
+					pset(x + rndsym(6),y + rndsym(6),s > 0 and 7 or 12) 
+				end
+			end)
+			if rnd() > .9 then
+				l_sspr(tile_1x1_flat_rocks_x + rndint(1) * 4, tile_1x1_flat_rocks_y + rndint(1) * 4, 4, 4, x - 3 + rndsym(2), y - 3 + rndsym(2))
+			end
+		end)
+	end
+	
+	local function road(x1,y1,x2,y2)
+		layer(3)
+		l_pal(4,5)
+		l_pal(5,10)
+		connection(5, 0, 0,x1,y1,x2,y2, function(x,y)
 			local n = 90 + rnd(2)
 			layer(3)
 			if rnd()> .17 then
@@ -312,34 +408,67 @@ local function prepare_map(sectionx, sectiony)
 			if rnd() > .9 then
 				l_sspr(tile_1x1_flat_rocks_x + rndint(1) * 4, tile_1x1_flat_rocks_y + rndint(1) * 4, 4, 4, x - 3 + rndsym(2), y - 3 + rndsym(2))
 			end
-			block(x,y)
 		end)
 	end
+
 	srand(sectionx + sectiony * 10)
 
-	-- draw_stone_wall(20,30,16 + rnd(10),10+rnd(10), block)
+	local rivers = map_rivers[idx_map_screen(sectionx, sectiony)]
+	if rivers then
+		for info in all(rivers) do
+			local x1,y1 = unpack(info.points[info.index])
+			x1 -= ox
+			y1 -= oy
+			if info.index > 1 then
+				local x2, y2 = unpack(info.points[info.index - 1]) 
+				x2 -= ox
+				y2 -= oy
+				river(x2,y2, x1, y1)
+			end
+			if info.index < #info.points then
+				local x2, y2 = unpack(info.points[info.index + 1]) 
+				x2 -= ox
+				y2 -= oy
+				river(x1,y1, x2, y2)
+			end
+		end
+	end
+	local town = map_towns[idx_map_screen(sectionx, sectiony)]
+	if town then
+		layer(200)
+		l_call(function()print("town")end)
+
+		for street in all(town.streets) do
+			srand(sectionx + sectiony * 10)
+			-- l_call(function()print("street "..flr(street.x1 - ox)..";" ..flr(street.y1 - oy)..";"..flr(street.x2-ox)..";"..flr(street.y2-oy),10,10)end)
+			road(street.x1 - ox, street.y1 - oy, street.x2 - ox, street.y2 - oy)
+		end
+		-- road(46,49,80,50)
+		draw_stone_wall(-5,30,16 + rnd(10),10+rnd(10), block)
 	-- draw_stone_wall(50,25,36 + rnd(10),20+rnd(10), block)
-	-- draw_stone_house(20,80,16 + rnd(10),10 + rnd(10), block)
-	-- draw_stone_house(50,85,36 + rnd(10),20 + rnd(10), block)
+		-- draw_stone_house(20,80,16 + rnd(10),10 + rnd(10), block)
+		-- draw_stone_house(60,85,36 + rnd(10),10 + rnd(10), block)
+	end
 
 
-	local cx,cy = 64 +rndsym(48), 64 + rndsym(48)
-	srand(sectionx * 4 + (sectiony - .5) * 10)
-	if rnd() > .05 then
-		road(cx,cy + 5,rndsym(30)+60,-8)
-	end
-	srand(sectionx * 4 + (sectiony + .5) * 10)
-	if rnd() > .05 then
-		road(cx,cy - 5,rndsym(30)+60,128)
-	end
-	srand((sectionx-.5) * 4 + sectiony * 10)
-	if rnd() > .05 then
-		road(cx + 5,cy,-8, rndsym(30)+60)
-	end
-	srand((sectionx+.5) * 4 + sectiony * 10)
-	if rnd() > .05 then
-		road(cx - 5,cy,128, rndsym(30)+60)
-	end
+	-- road network outdated
+	-- local cx,cy = 64 +rndsym(48), 64 + rndsym(48)
+	-- srand(sectionx * 4 + (sectiony - .5) * 10)
+	-- if rnd() > .05 then
+	-- 	road(cx,cy + 5,rndsym(30)+60,-8)
+	-- end
+	-- srand(sectionx * 4 + (sectiony + .5) * 10)
+	-- if rnd() > .05 then
+	-- 	road(cx,cy - 5,rndsym(30)+60,128)
+	-- end
+	-- srand((sectionx-.5) * 4 + sectiony * 10)
+	-- if rnd() > .05 then
+	-- 	road(cx + 5,cy,-8, rndsym(30)+60)
+	-- end
+	-- srand((sectionx+.5) * 4 + sectiony * 10)
+	-- if rnd() > .05 then
+	-- 	road(cx - 5,cy,128, rndsym(30)+60)
+	-- end
 
 	srand(sectionx + sectiony * 10)
 	local roads = {}
