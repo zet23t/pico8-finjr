@@ -16,11 +16,16 @@ tile_1x1_reet_roof_middle = 131
 tile_1x1_reet_roof_right = 132
 tile_1x1_window = 128
 tile_1x1_door = 146
+tile_1x1_rockblock = 133
+tile_1x1_rockblock_x = 40
+tile_1x1_rockblock_y = 64
 tile_1x1_grass_bottom_rim = 129
 tile_1x1_flat_rocks = 84
 tile_1x1_flat_rocks_x = 32
 tile_1x1_flat_rocks_y = 40
 tile_heart = 16
+
+roffset = 0
 
 function rndint(n)
 	return flr(rnd(n) + .5)
@@ -128,6 +133,10 @@ local function path(stepsize, x1, y1, x2, y2, scatter, placecallback)
 		local r = rndsym(scatter*d)
 		local x,y = (x1 + x2) / 2 - r * ny, (y1 + y2) / 2 + r * nx
 		local dh = (dstart + dend) / 2
+		if n == 1 then
+			placecallback(x1,y1, d, 0, nx, ny)
+			placecallback(x2,y2, d, 1, nx, ny)
+		end
 		placecallback(x,y, d, dh, nx, ny)
 		halfit(x1,y1,x,y, n, dstart, dh)
 		halfit(x,y,x2,y2, n, dh, dend)
@@ -324,10 +333,40 @@ function draw_stone_house(x,y, w, h, blockindex)
 	end
 end
 
+function dot(x1,y1,x2,y2) return x1*x2+y1*y2 end
+
+function distance( p1x, p1y, p2x, p2y)
+	if not p2x then p1x,p1y,p2x,p2y = p1x.x,p1x.y,p1y.x,p1y.y end
+	return ((p1x-p2x)^2 + (p1y-p2y)^2)^.5
+end
+
+function dist_segment_point( x1,y1,x2,y2, px,py, d )
+	if x1 == x2 and y1 == y2 then
+		return distance(x1,y1,px,py)
+	end
+	d = d or distance(x1,y1,x2,y2)
+	local t = ((px - x1)*(x2 - x1) + (px - y1)*(y2 - y1))/(d^2)
+	if t >= 0 and t <= 1 then
+		local projectionx,projectiony = x1 + t*(x2-x1), y1 + t*(y2-y1)
+		return distance( projectionx, projectiony, px, py ), projectionx, projectiony, true
+	else
+		local x,y = t < 0 and x1 or x2, t < 0 and y1 or y2
+		return distance(x,y,px,py), x,y, false
+	end
+end
+
+function info(str)
+	layer(220)
+	l_call(function() 
+		print(str, 0,20,0)
+	end)
+end
+
 local function prepare_map(sectionx, sectiony)
-	if cached_map.sectionx == sectionx and cached_map.sectiony == sectiony then
+	if cached_map.sectionx == sectionx and cached_map.sectiony == sectiony and roffset == cached_map.roffset then
 		return cached_map
 	end
+	cached_map.roffset = roffset
 	cached_map.sectionx = sectionx
 	cached_map.sectiony = sectiony
 	local ox, oy = sectionx * 128, sectiony * 128
@@ -349,7 +388,7 @@ local function prepare_map(sectionx, sectiony)
 	local function isblocked(x,y) return blocked[blockindex(x,y)] end
 	
 	local function connection(d, hcut, hoffset, x1,y1,x2,y2, ondraw)
-		srand(x1-x2+y1-y2)
+		srand(x1-x2+y1-y2+roffset)
 		path(d,x1,y1,x2,y2,.5, function(x,y,d,p, nx, ny)
 			local idx = idx128(x,y)
 			local h = cached_map.height[idx]
@@ -359,26 +398,86 @@ local function prepare_map(sectionx, sectiony)
 			-- 	l_spr(83 + rnd(3), x, y - 6, .5, .5)
 			-- 	layer(5)
 			-- end
-			ondraw(x,y,d, p,nx, ny)
+			ondraw(x,y,d, p,nx, ny,h)
 			block(x,y)
 		end)
 	end
 
+	function average_line(points)
+		assert(#points >= 2)
+			
+		local maxd,maxp,maxq = 0
+		for i=1,#points-1 do
+			local p = points[i]
+			for j=1,#points do
+				local q = points[j]
+				local d = distance(p,q)
+				if d > maxd then
+					maxd,maxp,maxq = d,p,q
+				end
+			end
+		end
+		local dx,dy = maxp.x - maxq.x, maxp.y - maxq.y
+		-- info(maxp == maxq)
+		-- info(maxp.x..","..maxp.y.."  "..maxq.x..","..maxp.y)
+		-- l_call(function()line(maxp.x,maxp.y,maxq.x,maxq.y,10)end)
+		dx /= maxd
+		dy /= maxd
+		return (maxp.x + maxq.x) / 2, (maxp.y + maxq.y) / 2, dx, dy
+		-- local n,sumx,sumy,sumx2,sumxy, m,x,y,dx,dy = #points,0,0,0,0
+		-- for p in all(points) do
+		-- 	sumx += p.x
+		-- 	sumy += p.y
+		-- end
+		-- local cx, cy = sumx / n, sumy / n
+
+		-- for p in all(points) do
+		-- 	x,y = p.x,p.y
+		-- 	-- x,y = x - cx, y - cy
+		-- 	-- sumx,sumy,sumx2,sumxy += x, y, x*x, x*y
+		-- 	sumx += x
+		-- 	sumy += y
+		-- 	sumxy += x*y
+		-- 	sumx2 += x*x
+		-- end
+		-- local div = (n * sumx2 - sumx * sumx)
+		
+		
+		-- if div == 0 then
+		-- 	dx, dy = 0, 1
+		-- else
+		-- 	m = (n * sumxy - sumx * sumy) / div
+		-- 	dx, dy = 1, m
+		-- end
+		-- layer(200)
+		-- 	l_call(function() 
+		-- 		-- for p in all(nearby) do 
+		-- 		-- 	pset(p.x,p.y,9)
+		-- 		-- end
+		-- 		print(sumx2.." - "..m.." "..dx.." "..dy,1,21,0)
+				
+		-- 	end)
+		-- m = (dx * dx + dy*dy)^.5
+		-- return cx,cy,dx / m, dy / m
+	end
+
+	local river_points = {}
 	local function river(x1,y1,x2,y2,rp)
 		layer(3)
-		l_pal(4,5)
 		l_pal(5,10)
 		layer(4)
 		l_pal(4,1)
-		connection(4, -.1, 0.008, x1,y1,x2,y2, function(x,y, d, p, nx, ny)
+		connection(4.5, -.1, 0.008, x1,y1,x2,y2, function(x,y, d, p, nx, ny, h)
+			river_points[#river_points + 1]= {x=x,y=y,nx=nx,ny=ny, p=p}
 			local n = 90 + rnd(2)
 			--l_call(function()rectfill(x-4,y-4,x+4,y+4,12)end)
 			layer(3)
+			l_pal(4,rnd() > .5 and 5 or 9)
 			if rnd()> .17 then
 				local rspr = 70 + (rnd() > .5 and 0 or 16)
 				l_spr(rspr, x + rndsym(10), y + rndsym(10),1,1, fx, fy)
 			end
-			l_spr(n, x-3, y-4)
+			if (h > 0) l_spr(n, x-3, y-4.6)
 			layer(4)
 			l_spr(n, x-3, y-3)
 			layer(5)
@@ -398,8 +497,81 @@ local function prepare_map(sectionx, sectiony)
 			end
 		end)
 	end
+
+	local function bridge(x1,y1,x2,y2)
+		local px, py = (x1+x2) * .5, (y1+y2) * .5
+		l_call(function() 
+			line(px,py, x1,y1,9)
+			line(px,py, x2,y2,9)
+			pset(px,py,8)
+		end)
+		if (y1 < y2) x1,y1,x2,y2 = x2,y2,x1,y1
+		
+		path(2.75,x1,y1,x2,y2,0, function(x,y, d, p, nx, ny)
+			local ox, oy = -ny, nx
+			if oy < 0 then ox, oy = -ox, -oy end
+			-- l_call(function() 
+			-- 	line(x,y, x+ox*5,y+oy*5,9)
+			-- end)
+			local px,py = x,y + sin(p*.5)*5 - 4
+			layer(5)
+			if d > 4 then
+				l_spr(0,x,y+2)
+			end
+			for l=-6,6,2 do
+				if l == -6 or l > -1 then
+					local src_offset = l>-5 and l < 5 and 4 or 0
+					local y = py+oy*l
+					layer(flr(y-16 + l*2))
+					l_sspr(tile_1x1_rockblock_x + src_offset, tile_1x1_rockblock_y, 4, 
+						(l < 6 and 6 or (7-cos(p))) - src_offset*.5 + rnd(3), px+ox*l+rnd(1.5), y)
+				end
+			end
+		end)
+	end
 	
-	local function road(x1,y1,x2,y2)
+	local function road(x1,y1,x2,y2,split)
+		local rd = distance(x1,y1,x2,y2)
+		local nearby = {}
+		for p in all(river_points) do
+			local dist,px,py, cross = dist_segment_point(x1,y1,x2,y2, p.x, p.y, rd)
+			if dist < 14 then
+				layer(200)
+				-- l_call(function() 
+				-- 	line(p.x, p.y, p.x + p.nx*8, p.y + p.ny * 8, 9)
+				-- 	pset(p.x,p.y,8)
+				-- end)
+				nearby[#nearby + 1] = p
+			end
+		end
+
+		split = (split or 0)
+		if #nearby > 1 and split < 1 then
+			local px,py,nx,ny = average_line(nearby)
+			nx, ny = -ny, nx
+			split += 1
+			if (dot(nx,ny, x2-x1,y2-y1) < 0) nx, ny = -nx, -ny
+			-- layer(200)
+			-- l_call(function() 
+			-- 	for p in all(nearby) do 
+			-- 		rectfill(p.x-1,p.y-1,p.x+1,p.y+1,9)
+			-- 	end
+			-- 	-- print(px.." "..py.." "..nx.." "..ny,0,20,0)
+			-- 	line(px,py, px+nx*24,py+ny*24,0)
+			-- 	line(px+ny*24,py-nx*24, px-ny*24,py+nx*24,7)
+			-- 	pset(px,py,8)
+			-- 	--line(x1,y1,x2,y2,7) 
+			-- 	line(x1, y1, px - nx * 12, py - ny * 12, 10)
+			-- 	line(px + nx * 12, py + ny * 12, x2, y2, 10)
+			-- end)
+			--if true then return end
+			road(x1, y1, px - nx * 30, py - ny * 30, split)
+			road(px - nx * 13, py - ny * 13, px - nx * 30, py - ny * 30, split)
+			bridge(px - nx * 13, py - ny * 13, px + nx * 13, py + ny * 13)
+			road(px + nx * 13, py + ny * 13, px + nx * 30, py + ny * 30, split)
+			road(px + nx * 30, py + ny * 30, x2, y2, split)
+			return
+		end
 		layer(3)
 		l_pal(4,5)
 		l_pal(5,10)
@@ -422,7 +594,7 @@ local function prepare_map(sectionx, sectiony)
 		end)
 	end
 
-	srand(sectionx + sectiony * 10)
+	srand(sectionx + sectiony * 10 + roffset)
 
 	local rivers = map_rivers[idx_map_screen(sectionx, sectiony)]
 	if rivers then
@@ -445,6 +617,7 @@ local function prepare_map(sectionx, sectiony)
 			end
 		end
 	end
+
 	local town = map_towns[idx_map_screen(sectionx, sectiony)]
 	if town then
 		layer(200)
@@ -698,7 +871,7 @@ function _draw()
 		if (btn(1)) player_x += speed right = true ampl = 2 playfoot()
 		if (btn(2)) player_y -= speed ampl = 2 playfoot()
 		if (btn(3)) player_y += speed ampl = 2 playfoot()
-		if (btnp(4)) hit = 1 sfx(3)
+		if (btnp(4)) hit = 1 sfx(3) roffset+=1
 	end
 	
 --	layer(2)
@@ -772,105 +945,105 @@ local permutation = {151,160,137,91,90,15,
 
 -- p is used to hash unit cube coordinates to [0, 255]
 for i=0,255 do
-    -- convert to 0 based index table
-    perlin.p[i] = permutation[i+1]
-    -- repeat the array to avoid buffer overflow in hash function
-    perlin.p[i+256] = permutation[i+1]
+	-- convert to 0 based index table
+	perlin.p[i] = permutation[i+1]
+	-- repeat the array to avoid buffer overflow in hash function
+	perlin.p[i+256] = permutation[i+1]
 end
 
 -- return range: [-1, 1]
 function perlin:noise(x, y, z)
-    y = y or 0
-    z = z or 0
+	y = y or 0
+	z = z or 0
 
-    -- calculate the "unit cube" that the point asked will be located in
-    local xi = band(flr(x),255)
-    local yi = band(flr(y),255)
-    local zi = band(flr(z),255)
+	-- calculate the "unit cube" that the point asked will be located in
+	local xi = band(flr(x),255)
+	local yi = band(flr(y),255)
+	local zi = band(flr(z),255)
 
-    -- next we calculate the location (from 0 to 1) in that cube
-    x = x - flr(x)
-    y = y - flr(y)
-    z = z - flr(z)
+	-- next we calculate the location (from 0 to 1) in that cube
+	x = x - flr(x)
+	y = y - flr(y)
+	z = z - flr(z)
 
-    -- we also fade the location to smooth the result
-    local u = self.fade(x)
-    local v = self.fade(y)
-    local w = self.fade(z)
+	-- we also fade the location to smooth the result
+	local u = self.fade(x)
+	local v = self.fade(y)
+	local w = self.fade(z)
 
-    -- hash all 8 unit cube coordinates surrounding input coordinate
-    local p = self.p
-    local a, aa, ab, aaa, aba, aab, abb, b, ba, bb, baa, bba, bab, bbb
-    a   = p[xi  ] + yi
-    aa  = p[a   ] + zi
-    ab  = p[a+1 ] + zi
-    aaa = p[ aa ]
-    aba = p[ ab ]
-    aab = p[ aa+1 ]
-    abb = p[ ab+1 ]
+	-- hash all 8 unit cube coordinates surrounding input coordinate
+	local p = self.p
+	local a, aa, ab, aaa, aba, aab, abb, b, ba, bb, baa, bba, bab, bbb
+	a   = p[xi  ] + yi
+	aa  = p[a   ] + zi
+	ab  = p[a+1 ] + zi
+	aaa = p[ aa ]
+	aba = p[ ab ]
+	aab = p[ aa+1 ]
+	abb = p[ ab+1 ]
 
-    b   = p[xi+1] + yi
-    ba  = p[b   ] + zi
-    bb  = p[b+1 ] + zi
-    baa = p[ ba ]
-    bba = p[ bb ]
-    bab = p[ ba+1 ]
-    bbb = p[ bb+1 ]
+	b   = p[xi+1] + yi
+	ba  = p[b   ] + zi
+	bb  = p[b+1 ] + zi
+	baa = p[ ba ]
+	bba = p[ bb ]
+	bab = p[ ba+1 ]
+	bbb = p[ bb+1 ]
 
-    -- take the weighted average between all 8 unit cube coordinates
-    return self.lerp(w,
-        self.lerp(v,
-            self.lerp(u,
-                self:grad(aaa,x,y,z),
-                self:grad(baa,x-1,y,z)
-            ),
-            self.lerp(u,
-                self:grad(aba,x,y-1,z),
-                self:grad(bba,x-1,y-1,z)
-            )
-        ),
-        self.lerp(v,
-            self.lerp(u,
-                self:grad(aab,x,y,z-1), self:grad(bab,x-1,y,z-1)
-            ),
-            self.lerp(u,
-                self:grad(abb,x,y-1,z-1), self:grad(bbb,x-1,y-1,z-1)
-            )
-        )
-    )
+	-- take the weighted average between all 8 unit cube coordinates
+	return self.lerp(w,
+		self.lerp(v,
+			self.lerp(u,
+				self:grad(aaa,x,y,z),
+				self:grad(baa,x-1,y,z)
+			),
+			self.lerp(u,
+				self:grad(aba,x,y-1,z),
+				self:grad(bba,x-1,y-1,z)
+			)
+		),
+		self.lerp(v,
+			self.lerp(u,
+				self:grad(aab,x,y,z-1), self:grad(bab,x-1,y,z-1)
+			),
+			self.lerp(u,
+				self:grad(abb,x,y-1,z-1), self:grad(bbb,x-1,y-1,z-1)
+			)
+		)
+	)
 end
 
 -- gradient function finds dot product between pseudorandom gradient vector
 -- and the vector from input coordinate to a unit cube vertex
 perlin.dot_product = {
-    [0x0]=function(x,y,z) return  x + y end,
-    [0x1]=function(x,y,z) return -x + y end,
-    [0x2]=function(x,y,z) return  x - y end,
-    [0x3]=function(x,y,z) return -x - y end,
-    [0x4]=function(x,y,z) return  x + z end,
-    [0x5]=function(x,y,z) return -x + z end,
-    [0x6]=function(x,y,z) return  x - z end,
-    [0x7]=function(x,y,z) return -x - z end,
-    [0x8]=function(x,y,z) return  y + z end,
-    [0x9]=function(x,y,z) return -y + z end,
-    [0xa]=function(x,y,z) return  y - z end,
-    [0xb]=function(x,y,z) return -y - z end,
-    [0xc]=function(x,y,z) return  y + x end,
-    [0xd]=function(x,y,z) return -y + z end,
-    [0xe]=function(x,y,z) return  y - x end,
-    [0xf]=function(x,y,z) return -y - z end
+	[0x0]=function(x,y,z) return  x + y end,
+	[0x1]=function(x,y,z) return -x + y end,
+	[0x2]=function(x,y,z) return  x - y end,
+	[0x3]=function(x,y,z) return -x - y end,
+	[0x4]=function(x,y,z) return  x + z end,
+	[0x5]=function(x,y,z) return -x + z end,
+	[0x6]=function(x,y,z) return  x - z end,
+	[0x7]=function(x,y,z) return -x - z end,
+	[0x8]=function(x,y,z) return  y + z end,
+	[0x9]=function(x,y,z) return -y + z end,
+	[0xa]=function(x,y,z) return  y - z end,
+	[0xb]=function(x,y,z) return -y - z end,
+	[0xc]=function(x,y,z) return  y + x end,
+	[0xd]=function(x,y,z) return -y + z end,
+	[0xe]=function(x,y,z) return  y - x end,
+	[0xf]=function(x,y,z) return -y - z end
 }
 function perlin:grad(hash, x, y, z)
-    return self.dot_product[band(hash,0xf)](x,y,z)
+	return self.dot_product[band(hash,0xf)](x,y,z)
 end
 
 -- fade function is used to smooth final output
 function perlin.fade(t)
-    return t * t * t * (t * (t * 6 - 15) + 10)
+	return t * t * t * (t * (t * 6 - 15) + 10)
 end
 
 function perlin.lerp(t, a, b)
-    return a + t * (b - a)
+	return a + t * (b - a)
 end
 __gfx__
 00000000001111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -937,14 +1110,14 @@ bb33b3bb0aa0b0bb44340b4b65100510056500650000000000000000005000050050005000444400
 00000000000000000005544000445200000000000331311000000000000000000000000000011111111110000000000000000000000000000000000000000000
 00000000000000000000055004444520000000000001110000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000524500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0055550000000000000000999a499a999a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-05521dd0000000000000a99999999a9a999000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0521216000000000000a49994a99999999a490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0512126050000000049999999a4a4994949944000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-05444460005000054a94a9499a4949499a4999400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-099999900b010010a94a94a949499a9499a499440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-004004001b01b00b44994a9949994a49999444440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000003b1b113b4444444444444444444444220000200000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0055550000000000000000999a499a999a0000000dd0044000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05521dd0000000000000a99999999a9a99900000766d424200000000000000000000000000000000000000000000000000000000000000000000000000000000
+0521216000000000000a49994a99999999a49000766d942400000000000000000000000000000000000000000000000000000000000000000000000000000000
+0512126050000000049999999a4a499494994400d77d299200000000000000000000000000000000000000000000000000000000000000000000000000000000
+05444460005000054a94a9499a4949499a4999405dd5212100000000000000000000000000000000000000000000000000000000000000000000000000000000
+099999900b010010a94a94a949499a9499a499445555122200000000000000000000000000000000000000000000000000000000000000000000000000000000
+004004001b01b00b44994a9949994a49999444445555221200000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000003b1b113b4444444444444444444444225555212200000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000555555000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000005511115600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000005122221600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -998,6 +1171,7 @@ __sfx__
 00140020086210962109621096310a6310a6210a6110a6110961108611086110861108621096210a6210a631096310962109631096310a631096210862108611096110a6110a6210b6210b6210b6310b6210a621
 010a00000c6440c6450e6340e63508624076250060400604006040060400604006040060400604006040060400604006040060400604006040060400604006040060400604000000000000000000000000000000
 000a00003e1133f1233d5333e5133f523005030050300503005030050300503005030050300503005030050300503005030050300000000000000000000000000000000000000000000000000000000000000000
+011b00202b6172c6173261731617326172a617296172e61734617366172c6172d617356173261732617296172b617336172d617316172d6172f6172d6172c61725617286172a6172c6172d6172c6172a6172c617
 __music__
 07 01024344
 01 01024344
