@@ -25,7 +25,7 @@ tile_1x1_flat_rocks_x = 32
 tile_1x1_flat_rocks_y = 40
 tile_heart = 16
 
-roffset = 0
+srnd_offset = 0
 
 function rndint(n)
 	return flr(rnd(n) + .5)
@@ -145,6 +145,8 @@ local function path(stepsize, x1, y1, x2, y2, scatter, placecallback)
 end
 
 function write_map(x,y,col)
+	x += 31
+	y += 31
 	local ptr = 0x2000 + y*32 + x\2
 	local v = @ptr
 	if x%2 == 0 then
@@ -200,14 +202,14 @@ function _init()
 	end
 
 	print "generating landscape"
-	local heights = {}
+	map_heights = {}
 	local river_spawns = {}
 	local possible_town_points = {}
 	for x=-31,32 do
 		for y=-31,32 do
 			dither = (x + y) & 1
 			local h = map_get_height(x * 128 + 64, y * 128 + 64)
-			heights[idx_map_screen(x,y)] = h
+			map_heights[idx_map_screen(x,y)] = h
 			local col = (ishigherthanwaterlevel(h + (dither * .2 + .1)) and 12) or 1
 			if (ishigherthanwaterlevel(h)) col = (h < .25/hscale and 10 or 11)
 			if (h > .228) col = h + dither * .15 > .3 and 5 or 6
@@ -219,9 +221,11 @@ function _init()
 			end
 			if h > 0.05 then river_spawns[#river_spawns + 1] = {x, y} end
 
-			write_map(x + 31, y + 31, col)
+			write_map(x, y, col)
 		end
 	end
+	draw_map(32,32)
+
 
 	print "river flow calculations"
 	map_rivers = {}
@@ -232,7 +236,7 @@ function _init()
 		local river_points = {}
 		while true do
 			local idx = idx_map_screen(x,y)
-			local h = heights[idx]
+			local h = map_heights[idx]
 			river_points[#river_points + 1] = {x * 128 + rndsym(48) + 64,y * 128 + rndsym(48) + 64}
 			local nodeinfo = {points = river_points, index = #river_points}
 			if map_rivers[idx] then
@@ -246,8 +250,8 @@ function _init()
 			if (h < -0.05) break
 			map_rivers[idx] = {nodeinfo}
 
-			local h1,h2,h3,h4 = heights[idx_map_screen(x-1,y)] or 10, heights[idx_map_screen(x+1,y)] or 10,
-				heights[idx_map_screen(x,y-1)] or 10, heights[idx_map_screen] or 10
+			local h1,h2,h3,h4 = map_heights[idx_map_screen(x-1,y)] or 10, map_heights[idx_map_screen(x+1,y)] or 10,
+				map_heights[idx_map_screen(x,y-1)] or 10, map_heights[idx_map_screen] or 10
 
 			if h1 < h2 and h1 < h3 and h1 < h4 then
 				x = x - 1
@@ -258,32 +262,171 @@ function _init()
 			else
 				y = y + 1
 			end 
-			write_map(x + 31, y + 31, 12)
+			write_map(x, y, 12)
 		end
+		draw_map(32,32)
 	end
 
-	print "generating towns"
+	print "generating towns & roads"
+	road_points = {}
+	map_town_list = {}
 	map_towns = {}
+	map_roads = {}
 	for i=1,25 do
 		srand(i)
 		local x,y = unpack(possible_town_points[1 + flr(rnd(#possible_town_points))])
 		local town = {
+			center = {x,y},
 			screens = {{x,y}, {x-1,y},{x+1,y}},
 			buildings = {},
 			streets = {},
+			connected = {}
 		}
+		map_towns[idx_map_screen(x,y)] = town
+		
 		local cx,cy = 64 + rndsym(20) + x * 128, 64 + rndsym(20) + y*128
-		town.streets[#town.streets + 1] = {x1=cx - 80, y1=cy - 20, x2=cx + 80, y2=cy + 20}
+		--town.streets[#town.streets + 1] = {x1=cx - 80, y1=cy - 20, x2=cx + 80, y2=cy + 20}
 		-- local h = map_get_height(cx, cy)
 		-- for i=1,50 do
-
+			
 		-- end
 		
-		if #town.streets > 0 then
-			write_map(x + 31, y + 31, 8)
+		--if #town.streets > 0 then
 			for p in all(town.screens) do
 				map_towns[idx_map_screen(unpack(p))] = town
 			end
+		--end
+
+		local cpos = @0x5f27
+		for i=1,#map_town_list do
+			local other = map_town_list[i]
+			local path_nodes = map_search_path(x,y, unpack(other.center))
+			if path_nodes then
+				--cursor(0,cpos)
+				--print(" from "..x..","..y.." to "..other.center[1]..","..other.center[2])
+				--print("   found")
+				draw_map(32,32)
+				local path = {
+					nodes = path_nodes,
+				}
+				for p in all(path_nodes) do
+					write_map(p.x, p.y, 4)
+					local roads = map_roads[idx_map_screen(p.x, p.y)] or {}
+					add(roads, path)
+					map_roads[idx_map_screen(p.x, p.y)] = roads
+				end
+			end
+			-- break
+		end
+		map_town_list[#map_town_list+1] = town
+	end
+
+	for i=1,#map_town_list do
+		local x,y = unpack(map_town_list[i].center)
+		write_map(x, y, 8)
+	end
+	-- assert()
+end
+
+function prio_queue_new()
+	return {lists={},min=0,max=0,count=0}
+end
+function prio_queue_count(queue)
+	return queue.count
+end
+function prio_queue_dequeue(queue)
+	assert(queue.lists)
+	if queue.count == 0 then
+		assert()
+		return end
+	while not queue.lists[queue.min] or #queue.lists[queue.min] == 0 do
+		queue.min += 1
+	end
+	queue.count -= 1
+	--print(#queue.lists[queue.min])
+	return deli(queue.lists[queue.min])
+end
+function prio_queue_enqueue(queue, prio, data)
+	prio = flr(prio)
+	queue.count += 1
+	queue.min = min(queue.min,prio)
+	queue.max = max(queue.max,prio)
+	local list = queue.lists[prio] or {}
+	add(list, data)
+	queue.lists[prio] = list
+end
+
+function map_search_path(x1,y1,x2,y2)
+	local path, queue, map = {}, prio_queue_new(), {}
+	prio_queue_enqueue(queue, 1, {x1,y1, nil,nil,0})
+	map[idx_map_screen(x1,y1)] = {x,y}
+	
+	while prio_queue_count(queue) > 0 do
+		local p = prio_queue_dequeue(queue)
+		local x,y,fx,fy,step, estimate = unpack(p)
+		assert(step)
+		local idx = idx_map_screen(x,y)
+		local height = map_heights[idx]
+
+		local function enqueue(to_x,to_y, i, step)
+			step += 1
+			local idx = idx_map_screen(to_x,to_y)
+			if map[idx] then return end
+			local function cost_info(to_x, to_y, step, next_height)
+				local remaining = abs(to_x - x2) + abs(to_y - y2)
+				return step,abs(next_height - height) * 100 + remaining + step
+			end
+			local function enqueue(to_x,to_y,x,y,idx, step)
+				local idx = idx_map_screen(to_x,to_y)
+				if map[idx] then return end
+				local next_height = map_heights[idx]
+				local p = {to_x,to_y,x,y, cost_info(to_x, to_y, step, next_height)}
+				map[idx] = p
+				prio_queue_enqueue(queue, p[6], p)
+			end
+			if map_roads[idx] then
+				for path in all(map_roads[idx]) do
+					local nodes = path.nodes
+					for i=1,#nodes do
+						local p = nodes[i]
+						if p.x == to_x and p.y == to_y then 
+							p = {to_x, to_y, x, y, cost_info(to_x, to_y, step, map_heights[idx_map_screen(to_x, to_y)])}
+							for k=i,1,-1 do
+								local q = nodes[k]
+								enqueue(q.x, q.y, p.x, p.y, 1, step + i - k)
+								p = q
+							end
+							p = nodes[i]
+							for k=i+1,#nodes do
+								local q = nodes[k]
+								enqueue(q.x, q.y, p.x, p.y, 1, step + k - i)
+								p = q
+							end
+							return
+						end
+						--enqueue(p.x, p.y, 1)
+					end
+				end
+			else
+				enqueue(to_x, to_y, x, y, idx, step + 2)
+			end
+		end
+
+		assert(step)
+		if x >= -31 and x <= 31 and y >= -31 and y <= 31 and height > 0 then 
+			if x == x2 and y == y2 then
+				while fx do
+					add(path,{x=x,y=y, idx=idx}, 1)
+					idx = idx_map_screen(fx,fy)
+					if not map[idx] then print(x1..","..y1..">"..x2..","..y2.."@"..fx..","..fy) end
+					x,y,fx,fy = unpack(map[idx])
+				end
+				return path
+			end
+			enqueue(x+1,y,nil, step)
+			enqueue(x-1,y,nil, step)
+			enqueue(x,y+1,nil, step)
+			enqueue(x,y-1,nil, step)
 		end
 	end
 end
@@ -363,10 +506,10 @@ function info(str)
 end
 
 local function prepare_map(sectionx, sectiony)
-	if cached_map.sectionx == sectionx and cached_map.sectiony == sectiony and roffset == cached_map.roffset then
+	if cached_map.sectionx == sectionx and cached_map.sectiony == sectiony and srnd_offset == cached_map.srnd_offset then
 		return cached_map
 	end
-	cached_map.roffset = roffset
+	cached_map.srnd_offset = srnd_offset
 	cached_map.sectionx = sectionx
 	cached_map.sectiony = sectiony
 	local ox, oy = sectionx * 128, sectiony * 128
@@ -388,7 +531,7 @@ local function prepare_map(sectionx, sectiony)
 	local function isblocked(x,y) return blocked[blockindex(x,y)] end
 	
 	local function connection(d, hcut, hoffset, x1,y1,x2,y2, ondraw)
-		srand(x1-x2+y1-y2+roffset)
+		srand(x1-x2+y1-y2+srnd_offset)
 		path(d,x1,y1,x2,y2,.5, function(x,y,d,p, nx, ny)
 			local idx = idx128(x,y)
 			local h = cached_map.height[idx]
@@ -522,7 +665,7 @@ local function prepare_map(sectionx, sectiony)
 				if l == -6 or l > -1 then
 					local src_offset = l>-5 and l < 5 and 4 or 0
 					local y = py+oy*l
-					layer(flr(y-16 + l*2))
+					layer(flr(y-4 -src_offset))
 					l_sspr(tile_1x1_rockblock_x + src_offset, tile_1x1_rockblock_y, 4, 
 						(l < 6 and 6 or (7-cos(p))) - src_offset*.5 + rnd(3), px+ox*l+rnd(1.5), y)
 				end
@@ -594,7 +737,7 @@ local function prepare_map(sectionx, sectiony)
 		end)
 	end
 
-	srand(sectionx + sectiony * 10 + roffset)
+	srand(sectionx + sectiony * 10 + srnd_offset)
 
 	local rivers = map_rivers[idx_map_screen(sectionx, sectiony)]
 	if rivers then
@@ -798,11 +941,15 @@ function print_centered(t, x, y, c)
 	print(t, x - #t * 2, y, c)
 end
 
+function draw_map(px,py)
+	for y=0,63 do
+		memcpy(0x6000 + flr(px/2) + flr(py + y)*128/2, 0x2000 + y * 32, 64/2)
+	end
+end
+
 function menu_mode_map()
 	return function()
-		for y=0,63 do
-			memcpy(0x6000 + 32/2 + (32 + y)*128/2, 0x2000 + y * 32, 64/2)
-		end
+		draw_map(32, 32)
 		camera(-(sectionx + 32) - 31, -(sectiony + 32) - 31)
 		line(-3,-3,-1,-1,7)
 		line(3,3,1,1,7)
@@ -871,19 +1018,38 @@ function _draw()
 		if (btn(1)) player_x += speed right = true ampl = 2 playfoot()
 		if (btn(2)) player_y -= speed ampl = 2 playfoot()
 		if (btn(3)) player_y += speed ampl = 2 playfoot()
-		if (btnp(4)) hit = 1 sfx(3) roffset+=1
+		if (btnp(4)) hit = 1 sfx(3) --srnd_offset+=1
 	end
 	
 --	layer(2)
 	local ppyg = player_y - sectiony * 128
 	layer(ppyg)
 	local ppx = player_x - sectionx * 128
-	local ppy = ppyg - ampl * (abs(sin(time() * 4)) - .5 )
+	local ppy = flr(ppyg - ampl * (abs(sin(time() * 4)) - .5 ))
 	l_spr(0, ppx, ppyg + 4)
 	l_spr(1, ppx, ppy, 1, 1, right)
+	local weapon_spr, weapon_x, weapon_y = flr(208 - sin(hit / 10) * 2.9),ppx + (right and 3 or -3), ppy
+	l_spr(weapon_spr,weapon_x,weapon_y, 1, 1, right)
 	
-	l_spr(208 - sin(hit / 10) * 2.9,ppx + (right and 3 or -3), ppy, 1, 1, right)
 	flush_layers()
+	function spr_n_to_xy(n)
+		return n%16*8,n\16*8
+	end
+	function draw_hidden_spr(spr, ppx, ppy, flip_x)
+		spr,ppx,ppy = flr(spr),flr(ppx),flr(ppy)
+		local sx,sy = spr_n_to_xy(spr)
+		for x=ppx,ppx+7 do
+			for y=ppy,ppy+7 do
+				local sc = sget(flip_x and (sx+7-(x-ppx)) or (x-ppx+sx),y-ppy+sy)
+				if sc~=0 and pget(x,y) ~= sc then
+					pset(x,y,1)
+					--spr(1, ppx, ppy, 1, 1, right)
+				end
+			end
+		end
+	end
+	draw_hidden_spr(1,ppx,ppy,right)
+	draw_hidden_spr(weapon_spr,weapon_x,weapon_y,right)
 
 	pal()
 	hearts = 4
@@ -1046,14 +1212,14 @@ function perlin.lerp(t, a, b)
 	return a + t * (b - a)
 end
 __gfx__
-00000000001111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000019999100099990000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00010100001ff910000ff90000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00101010001999100009990000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-01010100014444100044440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00101000014444100044440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000001f44f1000f44f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000001cc100000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000011110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000009999000100001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00010100000ff9000010001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00101010000999000010001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+01010100004444000100001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00101000004444000100001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000f44f000100001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000cc0000010010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 07200720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 e882e882000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
